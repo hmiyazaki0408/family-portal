@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>家庭ポータル - クールデザイン</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css?family=Roboto:400,700&display=swap" rel="stylesheet">
+  <!-- アイコン -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lucide-static@0.333.0/font/lucide.css">
+  <style>
+    body {
+      background: #181C24;
+      color: #F1F3F7;
+      font-family: 'Roboto', sans-serif;
+      margin: 0;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 700px;
+      margin: 0 auto;
+      padding: 32px 8px 70px 8px;
+    }
+    h1 { font-size: 2.2rem; color: #79b8ff; font-weight: 700; letter-spacing: 1px;}
+    .navbar {
+      background: #232A36;
+      padding: 18px 0;
+      display: flex;
+      justify-content: center;
+      gap: 32px;
+      box-shadow: 0 2px 16px #0004;
+      border-radius: 0 0 18px 18px;
+    }
+    .navbar a {
+      color: #F1F3F7;
+      font-size: 1.1rem;
+      text-decoration: none;
+      font-weight: 500;
+      transition: color .2s;
+    }
+    .navbar a:hover {
+      color: #79b8ff;
+    }
+    .card {
+      background: #232A36;
+      border-radius: 18px;
+      box-shadow: 0 2px 12px #0006;
+      margin: 32px 0;
+      padding: 28px;
+      animation: fadein 0.7s;
+    }
+    @keyframes fadein { from { opacity: 0; transform: translateY(20px);} to { opacity: 1; transform: none;}}
+    .inputRow {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    input, button, textarea {
+      border: none;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 1rem;
+    }
+    input[type="text"], textarea {
+      flex: 1;
+      background: #293042;
+      color: #F1F3F7;
+      margin-right: 8px;
+      min-width: 0;
+    }
+    button {
+      background: #79b8ff;
+      color: #181C24;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    button:hover {
+      background: #368bff;
+    }
+    .todoItem, .chatItem {
+      padding: 9px 0;
+      border-bottom: 1px solid #293042;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .todoItem:last-child, .chatItem:last-child {border-bottom: none;}
+    .todoCheck {
+      accent-color: #79b8ff;
+      transform: scale(1.2);
+      margin-right: 12px;
+    }
+    .chatName {font-weight: bold; color: #ffce7a;}
+    .chatMsg {margin-left: 8px;}
+    /* スクロールカスタム */
+    ::-webkit-scrollbar {width: 8px; background: #293042;}
+    ::-webkit-scrollbar-thumb {background: #79b8ff44; border-radius: 6px;}
+    @media (max-width: 600px) {
+      .container {padding: 12px 2px 100px 2px;}
+      .card {padding: 14px;}
+      .navbar {gap: 12px;}
+      h1 {font-size: 1.5rem;}
+    }
+  </style>
+  <!-- Firebase SDK（v9） -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+    // ここをあなたのFirebase値に書き換えてください
+    const firebaseConfig = {
+      apiKey: "AIzaSyAS5G9U1YZgVPbXtiLsLpum2elu-lvE1co",
+      authDomain: "familyportal-a7e3f.firebaseapp.com",
+      projectId: "familyportal-a7e3f",
+      storageBucket: "familyportal-a7e3f.firebasestorage.app",
+      messagingSenderId: "835361324931",
+      appId: "1:835361324931:web:c7c56d767d39b9305a80b6"
+    };
+
+    // Firebase初期化
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // --- ToDoリスト同期 ---
+    const todoCol = collection(db, "todos");
+    const todoList = document.getElementById("todoList");
+    function renderTodos(snapshot) {
+      todoList.innerHTML = "";
+      snapshot.forEach(docSnap => {
+        const todo = docSnap.data();
+        const div = document.createElement("div");
+        div.className = "todoItem";
+        div.innerHTML = `
+          <input type="checkbox" class="todoCheck" ${todo.done ? "checked" : ""}>
+          <span>${todo.text}</span>
+          <button style="margin-left:auto" title="削除"><i class="lucide-trash"></i></button>
+        `;
+        // チェック変更
+        div.querySelector(".todoCheck").addEventListener("change", e => {
+          updateDoc(doc(db, "todos", docSnap.id), {done: e.target.checked});
+        });
+        // 削除
+        div.querySelector("button").addEventListener("click", () => {
+          deleteDoc(doc(db, "todos", docSnap.id));
+        });
+        todoList.appendChild(div);
+      });
+    }
+    // リアルタイム反映
+    onSnapshot(query(todoCol, orderBy("createdAt")), renderTodos);
+
+    // 追加
+    document.getElementById("addTodoBtn").onclick = async () => {
+      const text = document.getElementById("newTodo").value.trim();
+      if(text) {
+        await addDoc(todoCol, {text, done:false, createdAt: Date.now()});
+        document.getElementById("newTodo").value = "";
+      }
+    };
+
+    // --- チャット ---
+    const chatCol = collection(db, "chats");
+    const chatList = document.getElementById("chatList");
+    function renderChats(snapshot) {
+      chatList.innerHTML = "";
+      snapshot.forEach(docSnap => {
+        const chat = docSnap.data();
+        const div = document.createElement("div");
+        div.className = "chatItem";
+        div.innerHTML = `<span class="chatName">${chat.name || "名無しさん"}</span>:<span class="chatMsg">${chat.text}</span>
+          <span style="font-size:0.8em;margin-left:auto;color:#aaa">${new Date(chat.createdAt).toLocaleString("ja-JP",{hour12:false})}</span>`;
+        chatList.appendChild(div);
+      });
+      // 自動で下までスクロール
+      chatList.scrollTop = chatList.scrollHeight;
+    }
+    onSnapshot(query(chatCol, orderBy("createdAt")), renderChats);
+
+    // チャット送信
+    document.getElementById("sendChatBtn").onclick = async () => {
+      const text = document.getElementById("newChat").value.trim();
+      const name = document.getElementById("chatName").value.trim() || "名無しさん";
+      if(text) {
+        await addDoc(chatCol, {name, text, createdAt: Date.now()});
+        document.getElementById("newChat").value = "";
+      }
+    };
+
+  </script>
+</head>
+<body>
+  <div class="navbar">
+    <a href="#">ホーム</a>
+    <a href="#">家計簿</a>
+    <a href="#">アルバム</a>
+    <a href="#">チャット</a>
+  </div>
+  <div class="container">
+    <h1><i class="lucide-home"></i> 家庭ポータル</h1>
+
+    <div class="card">
+      <h2><i class="lucide-check-square"></i> ToDoリスト</h2>
+      <div class="inputRow">
+        <input type="text" id="newTodo" placeholder="新しいタスクを入力…">
+        <button id="addTodoBtn"><i class="lucide-plus"></i> 追加</button>
+      </div>
+      <div id="todoList"></div>
+    </div>
+
+    <div class="card">
+      <h2><i class="lucide-message-circle"></i> 家族チャット</h2>
+      <div class="inputRow">
+        <input type="text" id="chatName" placeholder="名前(任意)" style="max-width:150px;">
+        <input type="text" id="newChat" placeholder="メッセージを入力…">
+        <button id="sendChatBtn"><i class="lucide-send"></i> 送信</button>
+      </div>
+      <div id="chatList" style="height:170px;overflow-y:auto;margin-top:12px;"></div>
+    </div>
+  </div>
+</body>
+</html>
