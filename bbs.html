@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>業務ログ掲示板 - リアルタイム同期版</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    /* ---（既存CSSはindex6のまま、デザイン・UIは変更なし！）--- */
+    /* ここに省略（元のCSSそのままコピペしてください） */
+  </style>
+  <!-- Firebase v9 CDN -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+    // ▼▼▼ あなたのFirebase値に書き換え（家庭ポータルの設定そのまま流用OK） ▼▼▼
+    const firebaseConfig = {
+      apiKey: "AIzaSyAS5G9U1YZgVPbXtiLsLpum2elu-lvE1co",
+      authDomain: "familyportal-a7e3f.firebaseapp.com",
+      projectId: "familyportal-a7e3f",
+      storageBucket: "familyportal-a7e3f.firebasestorage.app",
+      messagingSenderId: "835361324931",
+      appId: "1:835361324931:web:c7c56d767d39b9305a80b6"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // ============ Firestoreデータ同期用グローバル変数 ============
+    let threads = [];   // スレッド配列
+    let logsMap = {};   // {threadId: [log, ...], ...}
+    let selectedThreadId = null;
+    let selectedTags = [];
+    let searchText = "";
+
+    // ============ スレッド一覧リアルタイム監視 ============
+    const threadsCol = collection(db, "bbs_threads");
+    onSnapshot(query(threadsCol, orderBy("createdAt")), async (snapshot) => {
+      threads = [];
+      logsMap = {};
+      let promises = [];
+      snapshot.forEach(docSnap => {
+        const thread = { id: docSnap.id, ...docSnap.data() };
+        threads.push(thread);
+        // サブコレクション logs を取得
+        promises.push(
+          getDocs(query(collection(db, "bbs_threads", thread.id, "logs"), orderBy("createdAt")))
+            .then(logSnap => {
+              logsMap[thread.id] = [];
+              logSnap.forEach(l => {
+                logsMap[thread.id].push({ id: l.id, ...l.data() });
+              });
+            })
+        );
+      });
+      await Promise.all(promises);
+      renderThreadList();
+      renderLogs();
+    });
+
+    // ============ UI描画系 ============
+
+    function renderThreadList() {
+      const ul = document.getElementById('threadList');
+      ul.innerHTML = '';
+      if (threads.length === 0) {
+        ul.innerHTML = `<li style="color:#aaa;padding-left:7px;">（スレッドなし）</li>`;
+        return;
+      }
+      threads.forEach(th => {
+        const li = document.createElement('li');
+        if (th.id === selectedThreadId) li.className = 'active';
+        const btn = document.createElement('button');
+        btn.textContent = th.name;
+        btn.title = th.name;
+        btn.onclick = () => selectThread(th.id);
+        li.appendChild(btn);
+        const actions = document.createElement('div');
+        actions.className = 'thread-actions';
+        // 編集ボタン
+        const editBtn = document.createElement('button');
+        editBtn.textContent = '編集';
+        editBtn.onclick = (e) => { e.stopPropagation(); openEditThreadDialog(th.id); };
+        actions.appendChild(editBtn);
+        // 削除ボタン
+        const delBtn = document.createElement('button');
+        delBtn.textContent = '削除';
+        delBtn.onclick = (e) => { e.stopPropagation(); deleteThread(th.id); };
+        actions.appendChild(delBtn);
+        li.appendChild(actions);
+        ul.appendChild(li);
+      });
+    }
+
+    function renderTagFilter(tagsAll) {
+      const tagBox = document.getElementById('tagFilterBox');
+      tagBox.innerHTML = '';
+      if (!tagsAll.length) return;
+      tagsAll.forEach(tag => {
+        const badge = document.createElement('span');
+        badge.className = 'tag-badge' + (selectedTags.includes(tag)?' active':'');
+        badge.textContent = tag;
+        badge.onclick = ()=>toggleTagFilter(tag);
+        tagBox.appendChild(badge);
+      });
+    }
+
+    function renderLogs() {
+      const th = threads.find(t=>t.id===selectedThreadId);
+      const list = document.getElementById('logList');
+      const descBox = document.getElementById('threadDesc');
+      let tagSet = new Set();
+      if (th && logsMap[th.id]) logsMap[th.id].forEach(l=>(l.tags||[]).forEach(t=>tagSet.add(t)));
+      renderTagFilter([...tagSet].sort());
+      if (!th) {
+        list.innerHTML = '';
+        descBox.textContent = '';
+        document.getElementById('threadTitle').textContent = 'スレッドを選択してください';
+        hideFloatingForm();
+        return;
+      }
+      document.getElementById('threadTitle').textContent = th.name;
+      descBox.textContent = th.desc || '';
+      let logs = (logsMap[th.id]||[]).slice().reverse();
+      if(searchText){
+        const kw = searchText.toLowerCase();
+        logs = logs.filter(log=>{
+          return (
+            (log.body||'').toLowerCase().includes(kw)
+            || (log.tags||[]).join(',').toLowerCase().includes(kw)
+            || (th.name||'').toLowerCase().includes(kw)
+            || (th.desc||'').toLowerCase().includes(kw)
+            || (new Date(log.createdAt).toLocaleString()).toLowerCase().includes(kw)
+          );
+        });
+      }
+      if(selectedTags.length>0){
+        logs = logs.filter(log=>selectedTags.every(tag=>log.tags&&log.tags.includes(tag)));
+      }
+      if (!logs.length) {
+        list.innerHTML = `<div class="empty-msg">まだ書き込みがありません。</div>`;
+        return;
+      }
+      list.innerHTML = '';
+      logs.forEach((log, idx) => {
+        const div = document.createElement('div');
+        div.className = 'log-item';
+        const meta = document.createElement('div');
+        meta.className = 'log-meta';
+        meta.textContent = `No.${log.id}　${log.author||'名無し'}　${new Date(log.createdAt).toLocaleString()}`;
+        div.appendChild(meta);
+        if(log.tags&&log.tags.length){
+          const tagline = document.createElement('div');
+          tagline.className = 'log-tags';
+          log.tags.forEach(tag=>{
+            const badge = document.createElement('span');
+            badge.className = 'tag-badge'+(selectedTags.includes(tag)?' active':'');
+            badge.textContent = tag;
+            badge.onclick = ()=>toggleTagFilter(tag);
+            tagline.appendChild(badge);
+          });
+          div.appendChild(tagline);
+        }
+        const body = document.createElement('div');
+        body.className = 'log-body';
+        body.textContent = log.body;
+        div.appendChild(body);
+        const actions = document.createElement('div');
+        actions.className = 'log-actions';
+        const editBtn = document.createElement('button');
+        editBtn.textContent = '編集';
+        editBtn.onclick = () => editLog(th.id, log.id);
+        actions.appendChild(editBtn);
+        const delBtn = document.createElement('button');
+        delBtn.textContent = '削除';
+        delBtn.onclick = () => deleteLog(th.id, log.id);
+        actions.appendChild(delBtn);
+        div.appendChild(actions);
+        list.appendChild(div);
+      });
+    }
+
+    // ============ UI操作系 ============
+
+    document.getElementById('searchInput').oninput = (e)=>{
+      searchText = e.target.value;
+      renderLogs();
+    };
+    function toggleTagFilter(tag){
+      if(selectedTags.includes(tag)){
+        selectedTags = selectedTags.filter(t=>t!==tag);
+      }else{
+        selectedTags.push(tag);
+      }
+      renderLogs();
+    }
+    function selectThread(id) {
+      selectedThreadId = id;
+      selectedTags = [];
+      renderThreadList();
+      renderLogs();
+      resetForm();
+      hideFloatingForm();
+    }
+    function resetForm() {
+      document.getElementById('logBody').value = '';
+      document.getElementById('logTags').value = '';
+      document.getElementById('formPanelFloating').setAttribute('data-edit', '');
+    }
+
+    // ============ スレッド追加・編集・削除 ============
+
+    window.addThread = async function() {
+      const name = document.getElementById('newThreadName').value.trim();
+      const desc = document.getElementById('newThreadDesc').value.trim();
+      if (!name) return alert('スレッド名を入力してください');
+      await addDoc(threadsCol, {name, desc, createdAt: Date.now()});
+      document.getElementById('newThreadName').value = '';
+      document.getElementById('newThreadDesc').value = '';
+    };
+    async function deleteThread(id) {
+      if (!confirm('このスレッドを削除します。全投稿も消えます。よろしいですか？')) return;
+      // サブコレクションlogsも削除する必要あり
+      const logsSnap = await getDocs(collection(db, "bbs_threads", id, "logs"));
+      let promises = [];
+      logsSnap.forEach(l => {
+        promises.push(deleteDoc(doc(db, "bbs_threads", id, "logs", l.id)));
+      });
+      await Promise.all(promises);
+      await deleteDoc(doc(db, "bbs_threads", id));
+      if(selectedThreadId === id) selectedThreadId = null;
+    }
+    window.deleteThread = deleteThread;
+
+    function openEditThreadDialog(id) {
+      const th = threads.find(t=>t.id===id);
+      if (!th) return;
+      const dlg = document.getElementById('editThreadDialog');
+      dlg.innerHTML = `
+        <div class="dialog-back" onclick="closeEditThreadDialog(event)">
+          <div class="dialog-box" onclick="event.stopPropagation();">
+            <label>タイトル</label>
+            <input type="text" id="editThreadName" maxlength="40" value="${escapeHTML(th.name)}">
+            <label>概要（60字まで）</label>
+            <textarea id="editThreadDesc" maxlength="60">${escapeHTML(th.desc||'')}</textarea>
+            <div class="dlg-btns">
+              <button onclick="submitEditThread('${th.id}')">保存</button>
+              <button onclick="closeEditThreadDialog()">キャンセル</button>
+            </div>
+          </div>
+        </div>
+      `;
+      dlg.style.display = '';
+    }
+    window.openEditThreadDialog = openEditThreadDialog;
+
+    function closeEditThreadDialog(e) {
+      if(e && e.target && !e.target.classList.contains('dialog-back')) return;
+      document.getElementById('editThreadDialog').style.display = 'none';
+    }
+    window.closeEditThreadDialog = closeEditThreadDialog;
+
+    async function submitEditThread(id) {
+      const th = threads.find(t=>t.id===id);
+      if (!th) return;
+      const name = document.getElementById('editThreadName').value.trim();
+      const desc = document.getElementById('editThreadDesc').value.trim();
+      if (!name) return alert('スレッド名を入力してください');
+      await updateDoc(doc(db, "bbs_threads", id), { name, desc });
+      closeEditThreadDialog();
+    }
+    window.submitEditThread = submitEditThread;
+
+    function escapeHTML(str) {
+      return (str||'').replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+    }
+
+    // ============ ログ追加・編集・削除 ============
+
+    window.submitLog = async function() {
+      const th = threads.find(t=>t.id===selectedThreadId);
+      if (!th) return;
+      const body = document.getElementById('logBody').value.trim();
+      const tagsStr = document.getElementById('logTags').value.trim();
+      if (!body) return alert('本文を入力してください');
+      let tags = tagsStr? tagsStr.split(',').map(t=>t.trim()).filter(t=>t): [];
+      const editId = document.getElementById('formPanelFloating').getAttribute('data-edit');
+      const logsCol = collection(db, "bbs_threads", th.id, "logs");
+      if (editId) {
+        // 編集
+        await updateDoc(doc(db, "bbs_threads", th.id, "logs", editId), {
+          body, tags, createdAt: Date.now()
+        });
+        document.getElementById('formPanelFloating').setAttribute('data-edit', '');
+      } else {
+        // 新規
+        await addDoc(logsCol, {
+          body, tags, createdAt: Date.now()
+        });
+      }
+      resetForm();
+      hideFloatingForm();
+    };
+
+    async function deleteLog(tid, lid) {
+      if (!confirm('この投稿を削除します。よろしいですか？')) return;
+      await deleteDoc(doc(db, "bbs_threads", tid, "logs", lid));
+    }
+    window.deleteLog = deleteLog;
+
+    function editLog(tid, lid) {
+      const th = threads.find(t=>t.id===tid);
+      if (!th) return;
+      const log = (logsMap[tid]||[]).find(l=>l.id===lid);
+      if (!log) return;
+      document.getElementById('logBody').value = log.body;
+      document.getElementById('logTags').value = (log.tags||[]).join(', ');
+      document.getElementById('formPanelFloating').setAttribute('data-edit', log.id);
+      showFloatingForm();
+      window.scrollTo({top:0,behavior:'smooth'});
+    }
+    window.editLog = editLog;
+
+    // ============ 投稿フォームのUI操作 ============
+    const formPanel = document.getElementById('formPanelFloating');
+    const plusBtn = document.getElementById('plusBtn');
+    function showFloatingForm() {
+      formPanel.classList.remove('hide');
+    }
+    function hideFloatingForm() {
+      formPanel.classList.add('hide');
+      resetForm();
+    }
+    plusBtn.onclick = () => {
+      if(formPanel.classList.contains('hide')) {
+        showFloatingForm();
+      } else {
+        hideFloatingForm();
+      }
+    };
+    document.addEventListener('keydown', function(e){
+      if(e.key === 'F2') {
+        e.preventDefault();
+        if(formPanel.classList.contains('hide')) {
+          showFloatingForm();
+        } else {
+          hideFloatingForm();
+        }
+      }
+    });
+
+    // ============ 初期化 ============
+    window.onload = () => {
+      renderThreadList();
+      renderLogs();
+    };
+
+  </script>
+</head>
+<body>
+  <header>業務ログ掲示板</header>
+  <main>
+    <nav class="side" id="sidebar">
+      <button class="sidebar-toggle" id="sidebarCloseBtn" title="閉じる">&lt;</button>
+      <h2 style="margin-top:20px;">業務スレッド</h2>
+      <div class="thread-list">
+        <ul id="threadList"></ul>
+      </div>
+      <div class="add-thread">
+        <input type="text" id="newThreadName" placeholder="スレッド名" maxlength="40">
+        <textarea id="newThreadDesc" placeholder="概要（任意・60字まで）" maxlength="60"></textarea>
+        <button onclick="addThread()">追加</button>
+      </div>
+      <!-- CSV/PDFエクスポートなどは後ほど -->
+      <div class="sidebar-resize-handle" id="sidebarResizeHandle"></div>
+    </nav>
+    <button class="sidebar-open-btn" id="sidebarOpenBtn" style="display:none;" title="開く">＞</button>
+    <section class="main-panel" id="mainPanel">
+      <div class="search-bar">
+        <input type="text" id="searchInput" placeholder="検索（本文・タグ・スレッド名・概要・日付）">
+      </div>
+      <div class="tag-filter-box" id="tagFilterBox"></div>
+      <div class="thread-title" id="threadTitle">スレッドを選択してください</div>
+      <div class="thread-desc" id="threadDesc"></div>
+      <div class="log-list" id="logList"></div>
+    </section>
+  </main>
+  <div class="floating-form hide" id="formPanelFloating">
+    <textarea id="logBody" rows="4" maxlength="2000" placeholder="本文（必須）"></textarea>
+    <input type="text" id="logTags" placeholder="タグ（カンマ区切り）" maxlength="60">
+    <button onclick="submitLog()">書き込む</button>
+  </div>
+  <button class="plus-btn" id="plusBtn" title="投稿">
+    ＋
+  </button>
+  <div id="editThreadDialog" style="display:none;"></div>
+</body>
+</html>
